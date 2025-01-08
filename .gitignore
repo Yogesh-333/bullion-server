@@ -1,0 +1,14 @@
+# Node modules directory
+node_modules/
+
+# Log files
+logs
+*.log
+npm-debug.log*
+
+# Disregard Docker images and containers
+.dockerignore
+
+# Terraform state files
+*.tfstate
+*.tfstate.*
