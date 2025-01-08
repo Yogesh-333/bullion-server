@@ -1,0 +1,14 @@
+# k8s-manifests/service.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-eks-demo-service
+spec:
+  selector:
+    app: node-eks-demo
+  type: LoadBalancer
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
