@@ -1,6 +1,4 @@
-# .github/workflows/main.yml
-
-name: Build and Push to ECR
+name: Build, Push to ECR, and Deploy to EKS
 
 on:
   push:
@@ -11,14 +9,16 @@ permissions:
   contents: read
 
 env:
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+  CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  build-and-push:
-    name: Build and Push Docker Image to ECR
+  build-push-deploy:
+    name: Build, Push Docker Image to ECR, and Deploy to EKS
     runs-on: ubuntu-latest
 
     steps:
@@ -31,8 +31,12 @@ jobs:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsECRPushRole
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Ensure ECR Repository Exists
+        run: |
+          aws ecr describe-repositories --repository-name $ECR_REPOSITORY --region $AWS_REGION ||
+          aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
       - name: Build and Tag Docker Image
@@ -44,3 +48,16 @@ jobs:
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+
+      - name: Deploy to EKS
+        run: |
+          kubectl set image deployment/node-eks-demo-deployment node-eks-demo=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
