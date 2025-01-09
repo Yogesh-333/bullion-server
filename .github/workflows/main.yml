@@ -12,7 +12,6 @@ env:
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-  ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
   CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
   IMAGE_TAG: ${{ github.sha }}
 
@@ -29,9 +28,12 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsECRPushRole
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Ensure ECR Repository Exists
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
         run: |
           aws ecr describe-repositories --repository-name $ECR_REPOSITORY --region $AWS_REGION ||
           aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
@@ -40,11 +42,19 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v1
 
       - name: Build and Tag Docker Image
+        env:
+          ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
       - name: Push Docker Image to ECR
+        env:
+          ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
@@ -55,9 +65,63 @@ jobs:
           version: 'latest'
 
       - name: Update kubeconfig for EKS
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
         run: |
           aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
 
       - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
           kubectl set image deployment/node-eks-demo-deployment node-eks-demo=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          kubectl rollout status deployment/node-eks-demo-deployment
+
+      - name: Get Service URL and Test API
+        env:
+          SERVICE_NAME: node-eks-demo-service
+          NAMESPACE: default
+        run: |
+          #!/bin/bash
+          set -e
+          echo "Waiting for Load Balancer external IP..."
+          for i in {1..30}; do
+            EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME --namespace $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || echo "")
+            if [ -n "$EXTERNAL_IP" ]; then
+              echo "Service is available at: $EXTERNAL_IP"
+              break
+            fi
+            echo "Waiting for service external IP to be assigned... (${i}/30)"
+            sleep 20
+          done
+
+          if [ -z "$EXTERNAL_IP" ]; then
+            echo "Error: Load Balancer external IP not assigned."
+            exit 1
+          fi
+
+          # Wait for the application to be ready
+          echo "Waiting for application to become ready..."
+          for i in {1..15}; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://$EXTERNAL_IP/)
+            if [ "$HTTP_STATUS" -eq 200 ]; then
+              echo "Application is responding with HTTP 200 OK."
+              break
+            fi
+            echo "Application not ready yet... (${i}/15)"
+            sleep 10
+          done
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Error: Application did not become ready in time."
+            exit 1
+          fi
+
+          # Test the API endpoint
+          echo "Testing API endpoint..."
+          RESPONSE=$(curl -s http://$EXTERNAL_IP/)
+          echo "API Response: $RESPONSE"
+          # Optionally, you can add logic here to check the response content
