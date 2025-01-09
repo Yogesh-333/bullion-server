@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: node-eks-demo
-          image: 891612562954.dkr.ecr.us-east-1.amazonaws.com/bullion/server # Update the image tag
+          image: 891612562954.dkr.ecr.us-east-1.amazonaws.com/bullion/server:latest # Update the image tag
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
